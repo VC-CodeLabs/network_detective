@@ -38,5 +38,5 @@ Log Parsing: Convert these intricate log entries into a beautiful, well-structur
 The title of top network detective will go to the participant whose submission:
 
 * Accurately completes all analysis tasks.
-* Creativity with a generated report for analysis (subjective; I'll have a group of people review to help decide the best report)
+* Creativity with a generated report for analysis (subjective; I'll have a group of people review to help decide the best report) - **BE CREATIVE!!!!**
 * Generates the threat report with the fastest execution speed, measured in milliseconds.
