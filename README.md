@@ -28,6 +28,7 @@ You are to develop the Advanced Network Log Analyzer, a tool that sifts through 
 **The Challenge**</br>
 Log Parsing: Convert these intricate log entries into a beautiful, well-structured, easily navigable format report.
 
+* Solution must be written in Go
 * Total requests and failed login attempts by IP address.
 * Detection of unusual activity patterns or potential security breaches.
 * Traffic analysis to determine peak and low activity periods.
