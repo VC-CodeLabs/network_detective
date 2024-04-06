@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -185,9 +186,102 @@ func processLogFile(fileSpec string) bool {
 		return false
 	}
 
+	analyze()
+	report()
+
 	return true
 }
 
+type networkDataItem struct {
+	timestamp  time.Time
+	ipAddr     string
+	method     string // GET, POST, PUT, DELETE &c
+	path       string
+	statusCode int // http response code 100-599
+}
+
+var networkData []networkDataItem
+var byIP map[string][]int = make(map[string][]int)
+var requestsByIP map[string]int = make(map[string]int)
+var failedLoginsByIP map[string]int = make(map[string]int)
+
 func storeData(timestamp time.Time, ipAddr string, method string, path string, statusCode int) {
-	// TODO
+	networkData = append(networkData, networkDataItem{timestamp, ipAddr, method, path, statusCode})
+
+	newDataIndex := len(networkData) - 1
+
+	indexes, ok := byIP[ipAddr]
+
+	if !ok {
+		indexes = make([]int, 0)
+		byIP[ipAddr] = indexes
+	}
+
+	byIP[ipAddr] = append(indexes, newDataIndex)
+
+	requestsByIP[ipAddr]++
+
+	if path == "/login" && isHttpError(statusCode) {
+		failedLoginsByIP[ipAddr]++
+	}
+
+}
+
+var totalRequests = 0
+var totalFailedLogins = 0
+
+func analyze() {
+	totalRequests = len(networkData)
+	isFailedLogin := func(i networkDataItem) bool { return i.path == "/login" && isHttpError(i.statusCode) }
+	totalFailedLogins = Count(networkData, isFailedLogin)
+
+	// by IP analysis was done when storing
+
+}
+
+func Count[T any](ts []T, pred func(T) bool) int {
+	matches := 0
+	for _, t := range ts {
+		if pred(t) {
+			matches++
+		}
+	}
+	return matches
+}
+
+func isHttpError(statusCode int) bool {
+	return statusCode/100 != 2
+}
+
+func report() {
+	fmt.Println("Total Requests:", totalRequests)
+	fmt.Println("Total Failed Logins:", totalFailedLogins)
+
+	keys := make([]string, 0, len(byIP))
+	for key := range byIP {
+		keys = append(keys, key)
+	}
+
+	// sort so that we get the most failures at the top, subsorted by most requests
+	sort.SliceStable(keys, func(i, j int) bool {
+		f1, ok1 := failedLoginsByIP[keys[i]]
+		f2, ok2 := failedLoginsByIP[keys[j]]
+
+		if ok1 && ok2 {
+			return f1 > f2
+		} else if ok1 {
+			return true
+		} else if ok2 {
+			return false
+		} else {
+			return requestsByIP[keys[i]] > requestsByIP[keys[j]]
+		}
+
+	})
+
+	fmt.Println("IP                     #Requests  #Failed Logins")
+	fmt.Println("---------------  --------------- ---------------")
+	for _, key := range keys {
+		fmt.Printf("%-15s  %15d %15d\n", key, requestsByIP[key], failedLoginsByIP[key])
+	}
 }
