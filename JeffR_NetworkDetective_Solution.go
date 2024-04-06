@@ -8,7 +8,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -117,9 +119,47 @@ func processLogFile(fileSpec string) bool {
 			})
 
 			if len(fields) != 4 {
-				log.Println("Invalid log format at line#", lineNum+1, ":", line)
+				log.Println("ERR: Invalid log format at line#", lineNum+1, ":", line)
+				log.Println("ERR: log line format s/b `<timestamp>,<ip>,<method> <path>,<status>`")
 				return false
 			}
+
+			parsedTime, err := time.Parse("2006-01-02T15:04:05", fields[0])
+
+			if err != nil {
+				log.Println("ERR:", err)
+				log.Println("ERR: Invalid timestamp at line#", lineNum+1, ":", fields[0])
+				log.Println("ERR: timestamp format s/b `<yyyy-mm-ddThh24:mm:ss>`")
+				return false
+			}
+
+			parsedIP := strings.TrimSpace(fields[1])
+
+			parsedMethodPath := strings.Fields(strings.TrimSpace(fields[2]))
+
+			if len(parsedMethodPath) != 2 {
+				log.Println("ERR: Invalid method+path at line#", lineNum+1, ":", fields[2])
+				log.Println("ERR: method+path format s/b `<(GET|PUT|POST|DELETE...)><space(s)><path>`")
+				return false
+			}
+
+			parsedMethod := strings.ToUpper(parsedMethodPath[0])
+			parsedPath := parsedMethodPath[1]
+
+			parsedStatus, err := strconv.Atoi(fields[3])
+
+			if err != nil {
+				log.Println("ERR: Invalid response status at line#", lineNum+1, ":", fields[3])
+				log.Println("ERR: response status format s/b `<100..599>`")
+				return false
+
+			}
+
+			// TODO consider valiating / normalizing other inputs
+
+			storeData(parsedTime, parsedIP, parsedMethod, parsedPath, parsedStatus)
+
+			fmt.Println("Processed", parsedTime, parsedIP, parsedMethod, parsedPath, parsedStatus)
 
 			dataLines++
 		}
@@ -132,7 +172,13 @@ func processLogFile(fileSpec string) bool {
 
 	}
 
-	fmt.Println("Processed", lineNum, "lines of log input with", dataLines, "data points.")
+	fmt.Print("Processed ", lineNum, " lines of log input")
+
+	if dataLines != lineNum {
+		fmt.Print(" with ", dataLines, " data points.")
+	}
+
+	fmt.Println()
 
 	if lineNum == 0 || dataLines == 0 {
 		log.Println("ERR: no traffic found to analyze")
@@ -140,4 +186,8 @@ func processLogFile(fileSpec string) bool {
 	}
 
 	return true
+}
+
+func storeData(timestamp time.Time, ipAddr string, method string, path string, statusCode int) {
+	// TODO
 }
