@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -204,8 +205,39 @@ var networkData []networkDataItem
 var byIP map[string][]int = make(map[string][]int)
 var requestsByIP map[string]int = make(map[string]int)
 var failedLoginsByIP map[string]int = make(map[string]int)
+var minTime time.Time
+var maxTime time.Time
+
+type trafficVolumeKey struct {
+	weekday   time.Weekday
+	timeOfDay time.Duration
+}
+
+var trafficVolume map[trafficVolumeKey]int = make(map[trafficVolumeKey]int)
 
 func storeData(timestamp time.Time, ipAddr string, method string, path string, statusCode int) {
+	if len(networkData) == 0 {
+		minTime = timestamp
+		maxTime = timestamp
+	} else {
+		if timestamp.Before(minTime) {
+			minTime = timestamp
+		}
+
+		if timestamp.After(maxTime) {
+			maxTime = timestamp
+		}
+	}
+
+	hours, minutes, seconds := timestamp.Round(time.Duration(5 * int(time.Minute))).Clock()
+	timeOfDay := time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+	// YGBFKM
+	// timeOfDay, _ := time.ParseDuration("" + strconv.Itoa(hours) + "h" + strconv.Itoa(minutes) + "m" + strconv.Itoa(seconds) + "s")
+
+	fmt.Printf("timeOfDay: %s\n", timeOfDay)
+
+	trafficVolume[trafficVolumeKey{timestamp.Weekday(), timeOfDay}]++
+
 	networkData = append(networkData, networkDataItem{timestamp, ipAddr, method, path, statusCode})
 
 	newDataIndex := len(networkData) - 1
@@ -230,12 +262,95 @@ func storeData(timestamp time.Time, ipAddr string, method string, path string, s
 var totalRequests = 0
 var totalFailedLogins = 0
 
+type span struct {
+	start   time.Time
+	end     time.Time
+	elapsed time.Duration
+}
+
+var activityGaps []span = make([]span, 0)
+
 func analyze() {
 	totalRequests = len(networkData)
 	isFailedLogin := func(i networkDataItem) bool { return i.path == "/login" && isHttpError(i.statusCode) }
 	totalFailedLogins = Count(networkData, isFailedLogin)
 
 	// by IP analysis was done when storing
+
+	// find the spikes
+	// here, we go by Day of week and time of day rounded to 5 minute intervals
+
+	/*
+		dataSetSpan := maxTime.Sub(minTime);
+
+		startDay := time.Monday
+		endDay := time.Sunday
+		wraps := true
+
+		if( dataSetSpan < time.Duration(7*24*int(time.Hour))) {
+			startDay = minTime.Weekday()
+			endDay = maxTime.Weekday()
+			wraps = false
+		}
+	*/
+
+	// find the gaps in traffic
+	// here, we use the actual timestamps for a more precise measure
+
+	timestamps := make([]time.Time, 0)
+	for _, item := range networkData {
+		timestamps = append(timestamps, item.timestamp)
+	}
+
+	slices.SortStableFunc(timestamps, func(a time.Time, b time.Time) int {
+		return a.Compare(b)
+	})
+
+	const MAX_GAPS = 10
+	var last time.Time
+	for i, timestamp := range timestamps {
+		if i > 0 {
+			if timestamp == last {
+				continue
+			}
+			elapsed := timestamp.Sub(last)
+			/*
+				if elapsed == 0 {
+					continue
+				}
+			*/
+			currentGap := span{last, timestamp, elapsed}
+			gapCount := len(activityGaps)
+			if gapCount > 1 {
+
+				var insertAt int = -1
+
+				if elapsed > activityGaps[gapCount-1].elapsed {
+					for j, activityGap := range activityGaps {
+						if elapsed > activityGap.elapsed {
+							insertAt = j
+							break
+						}
+					}
+				}
+
+				if insertAt != -1 {
+					activityGaps = append(activityGaps[:insertAt+1], activityGaps[insertAt:]...)
+					activityGaps[insertAt] = currentGap
+				} else if gapCount <= MAX_GAPS {
+					activityGaps = append(activityGaps, currentGap)
+				}
+
+				if len(activityGaps) > MAX_GAPS {
+					activityGaps = activityGaps[:MAX_GAPS]
+				}
+
+			} else {
+				activityGaps = append(activityGaps, currentGap)
+			}
+		}
+		last = timestamp
+	}
 
 }
 
@@ -254,6 +369,12 @@ func isHttpError(statusCode int) bool {
 }
 
 func report() {
+	fmt.Println()
+	fmt.Println("========================")
+	fmt.Println("Network Traffic Analysis")
+	fmt.Println("========================")
+	fmt.Println()
+	fmt.Println("Data spans", minTime, "to", maxTime)
 	fmt.Println("Total Requests:", totalRequests)
 	fmt.Println("Total Failed Logins:", totalFailedLogins)
 
@@ -279,9 +400,22 @@ func report() {
 
 	})
 
+	fmt.Println()
+	fmt.Println("Activity By IP")
+	fmt.Println("==============")
 	fmt.Println("IP                     #Requests  #Failed Logins")
 	fmt.Println("---------------  --------------- ---------------")
 	for _, key := range keys {
 		fmt.Printf("%-15s  %15d %15d\n", key, requestsByIP[key], failedLoginsByIP[key])
 	}
+
+	fmt.Println()
+	fmt.Println("Top Activity Gaps")
+	fmt.Println("=================")
+	fmt.Println("Start                          End                            Duration")
+	fmt.Println("-----------------------------  -----------------------------  --------")
+	for _, gap := range activityGaps {
+		fmt.Printf("%s  %s  %s\n", gap.start, gap.end, gap.elapsed)
+	}
+
 }
