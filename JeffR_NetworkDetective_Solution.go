@@ -359,9 +359,12 @@ func analyze() {
 	}
 
 	for i := 0; i < len(volumeKeys); i++ {
-		for j := i + 1; j < len(volumeKeys); j++ {
+		for j := i; j < len(volumeKeys); j++ {
 			startSpike := volumeKeys[i]
 			endSpike := volumeKeys[j]
+			if i == j {
+				endSpike.timeOfDay = time.Duration(int(endSpike.timeOfDay.Seconds())*int(time.Second) + int(5*time.Minute) - int(1*time.Second))
+			}
 			var spikeRequests int64 = 0
 			for k := i; k <= j; k++ {
 				spikeRequests += int64(trafficVolume[volumeKeys[k]])
