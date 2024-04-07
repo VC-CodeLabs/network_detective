@@ -269,11 +269,12 @@ var totalRequests = 0
 var totalFailedLogins = 0
 
 type spike struct {
-	start    trafficVolumeKey
-	end      trafficVolumeKey
-	spans    time.Duration
-	requests int64
-	avgRqs   float64
+	start     trafficVolumeKey
+	end       trafficVolumeKey
+	spans     time.Duration
+	requests  int64
+	avgRqs    float64
+	singleton bool
 }
 
 var activitySpikes []spike = make([]spike, 0)
@@ -401,10 +402,20 @@ func analyze() {
 				spikeDuration += days * 24 * int(time.Hour)
 			}
 			spikeDuration /= int(time.Second)
+			if i == j {
+				spikeDuration++
+			} else {
+				spikeDuration += 5 * 60
+			}
 			// fmt.Println("spikeDuration:", spikeDuration)
 			spikeAverage := float64(spikeRequests) / float64(spikeDuration)
 
-			currentSpike := spike{startSpike, endSpike, time.Duration(spikeDuration * int(time.Second)), spikeRequests, spikeAverage}
+			if VERBOSE {
+				fmt.Printf("spike- %s %s %d %f\n", toClock(startSpike.timeOfDay), toClock(endSpike.timeOfDay), spikeRequests, spikeAverage)
+			}
+
+			currentSpike := spike{startSpike, endSpike,
+				time.Duration(spikeDuration * int(time.Second)), spikeRequests, spikeAverage, i == j}
 			spikeCount := len(activitySpikes)
 
 			if spikeCount > 0 {
@@ -465,6 +476,9 @@ func analyze() {
 			dummyCurr = dummyCurr.Add(time.Duration(days * 24 * int(time.Hour)))
 
 			if dummyCurr.Sub(dummyPrev) > time.Duration(5*int(time.Minute)) {
+				if VERBOSE {
+					fmt.Println("cyclicalGap- processing", toClock(cycleStart.timeOfDay), toClock(cycleEnd.timeOfDay))
+				}
 				// account for crossing midnight boundary in either direction
 				prevDayWas := dummyPrev.Day()
 				dummyPrev = dummyPrev.Add(time.Duration(5 * int(time.Minute)))
@@ -492,6 +506,10 @@ func analyze() {
 
 				hours, minutes, seconds = dummyCurr.Clock()
 				cycleEnd.timeOfDay = time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+
+				if VERBOSE {
+					fmt.Println("cyclicalGap- adjusted", toClock(cycleStart.timeOfDay), toClock(cycleEnd.timeOfDay))
+				}
 
 				/*
 					cycleStart.timeOfDay = time.Duration(int(cycleStart.timeOfDay) + 5*int(time.Minute))
@@ -526,6 +544,10 @@ func analyze() {
 
 				} else {
 					activityGapsCyclical = append(activityGapsCyclical, newGap)
+				}
+			} else {
+				if VERBOSE {
+					fmt.Println("cyclicalGap- skipping", toClock(cycleStart.timeOfDay), toClock(cycleEnd.timeOfDay))
 				}
 			}
 		}
@@ -649,13 +671,21 @@ func report() {
 	fmt.Println()
 	fmt.Println("Top Activity Spikes**")
 	fmt.Println("=====================")
-	fmt.Println("Start                End                       Spans        #Rqs        Rq/S")
+	fmt.Println("Start (+/-2.5m)      End  (+/-2.5m)           ~Spans        #Rqs        Rq/S")
 	fmt.Println("-------------------  -------------------  ----------  ----------  ----------")
 	for _, spike := range activitySpikes {
-		fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
-			spike.start.weekday, toClock(spike.start.timeOfDay),
-			spike.end.weekday, toClock(spike.end.timeOfDay),
-			spike.spans, spike.requests, spike.avgRqs)
+		if spike.singleton {
+			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
+				spike.start.weekday, toClock(spike.start.timeOfDay),
+				"", "*",
+				"(5m)", spike.requests, spike.avgRqs)
+
+		} else {
+			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
+				spike.start.weekday, toClock(spike.start.timeOfDay),
+				spike.end.weekday, toClock(spike.end.timeOfDay),
+				spike.spans, spike.requests, spike.avgRqs)
+		}
 	}
 	fmt.Println("** data timestamps rounded to 5 minute intervals")
 
