@@ -284,7 +284,7 @@ type span struct {
 	elapsed time.Duration
 }
 
-var activityGaps []span = make([]span, 0)
+var activityGapsAbsolute []span = make([]span, 0)
 
 func analyze() {
 	totalRequests = len(networkData)
@@ -421,7 +421,7 @@ func analyze() {
 		}
 	}
 
-	// find the gaps in traffic
+	// find the absolute gaps in traffic
 	// here, we use the actual timestamps for a more precise measure
 
 	timestamps := make([]time.Time, 0)
@@ -447,13 +447,13 @@ func analyze() {
 				}
 			*/
 			currentGap := span{last, timestamp, elapsed}
-			gapCount := len(activityGaps)
+			gapCount := len(activityGapsAbsolute)
 			if gapCount > 0 {
 
 				var insertAt int = -1
 
-				if elapsed > activityGaps[gapCount-1].elapsed {
-					for j, activityGap := range activityGaps {
+				if elapsed > activityGapsAbsolute[gapCount-1].elapsed {
+					for j, activityGap := range activityGapsAbsolute {
 						if elapsed > activityGap.elapsed {
 							insertAt = j
 							break
@@ -462,18 +462,18 @@ func analyze() {
 				}
 
 				if insertAt != -1 {
-					activityGaps = append(activityGaps[:insertAt+1], activityGaps[insertAt:]...)
-					activityGaps[insertAt] = currentGap
+					activityGapsAbsolute = append(activityGapsAbsolute[:insertAt+1], activityGapsAbsolute[insertAt:]...)
+					activityGapsAbsolute[insertAt] = currentGap
 				} else if gapCount <= MAX_GAPS {
-					activityGaps = append(activityGaps, currentGap)
+					activityGapsAbsolute = append(activityGapsAbsolute, currentGap)
 				}
 
-				if len(activityGaps) > MAX_GAPS {
-					activityGaps = activityGaps[:MAX_GAPS]
+				if len(activityGapsAbsolute) > MAX_GAPS {
+					activityGapsAbsolute = activityGapsAbsolute[:MAX_GAPS]
 				}
 
 			} else {
-				activityGaps = append(activityGaps, currentGap)
+				activityGapsAbsolute = append(activityGapsAbsolute, currentGap)
 			}
 		}
 		last = timestamp
@@ -550,11 +550,11 @@ func report() {
 	fmt.Println("** data timestamps rounded to 5 minute intervals")
 
 	fmt.Println()
-	fmt.Println("Top Activity Gaps")
-	fmt.Println("=================")
+	fmt.Println("Top Absolute Activity Gaps")
+	fmt.Println("==========================")
 	fmt.Println("Start                          End                            Duration")
 	fmt.Println("-----------------------------  -----------------------------  --------")
-	for _, gap := range activityGaps {
+	for _, gap := range activityGapsAbsolute {
 		fmt.Printf("%s  %s  %s\n", gap.start, gap.end, gap.elapsed)
 	}
 
