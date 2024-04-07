@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const VERBOSE = false
+
 func main() {
 
 	// argsWithProg := os.Args
@@ -101,7 +103,9 @@ func processLogFile(fileSpec string) bool {
 
 		line = strings.TrimSpace(line)
 
-		fmt.Println("processing: ", line)
+		if VERBOSE {
+			fmt.Println("processing: ", line)
+		}
 
 		if err == io.EOF {
 			if len(line) == 0 {
@@ -161,7 +165,9 @@ func processLogFile(fileSpec string) bool {
 
 			storeData(parsedTime, parsedIP, parsedMethod, parsedPath, parsedStatus)
 
-			fmt.Println("Processed", parsedTime, parsedIP, parsedMethod, parsedPath, parsedStatus)
+			if VERBOSE {
+				fmt.Println("Processed", parsedTime, parsedIP, parsedMethod, parsedPath, parsedStatus)
+			}
 
 			dataLines++
 		}
@@ -234,7 +240,7 @@ func storeData(timestamp time.Time, ipAddr string, method string, path string, s
 	// YGBFKM
 	// timeOfDay, _ := time.ParseDuration("" + strconv.Itoa(hours) + "h" + strconv.Itoa(minutes) + "m" + strconv.Itoa(seconds) + "s")
 
-	fmt.Printf("timeOfDay: %s\n", timeOfDay)
+	// fmt.Printf("timeOfDay: %s\n", timeOfDay)
 
 	trafficVolume[trafficVolumeKey{timestamp.Weekday(), timeOfDay}]++
 
@@ -262,6 +268,16 @@ func storeData(timestamp time.Time, ipAddr string, method string, path string, s
 var totalRequests = 0
 var totalFailedLogins = 0
 
+type spike struct {
+	start    trafficVolumeKey
+	end      trafficVolumeKey
+	spans    time.Duration
+	requests int64
+	avgRqs   float64
+}
+
+var activitySpikes []spike = make([]spike, 0)
+
 type span struct {
 	start   time.Time
 	end     time.Time
@@ -280,19 +296,127 @@ func analyze() {
 	// find the spikes
 	// here, we go by Day of week and time of day rounded to 5 minute intervals
 
-	/*
-		dataSetSpan := maxTime.Sub(minTime);
+	const MAX_SPIKES = 10
 
-		startDay := time.Monday
-		endDay := time.Sunday
-		wraps := true
+	dataSetSpan := maxTime.Sub(minTime)
 
-		if( dataSetSpan < time.Duration(7*24*int(time.Hour))) {
-			startDay = minTime.Weekday()
-			endDay = maxTime.Weekday()
-			wraps = false
+	startDay := time.Monday
+	endDay := time.Sunday
+	wraps := true
+
+	if dataSetSpan < time.Duration(7*24*int(time.Hour)) {
+		startDay = minTime.Weekday()
+		endDay = maxTime.Weekday()
+		wraps = false
+	}
+
+	if VERBOSE {
+		fmt.Println("startDay:", startDay, "endDay:", endDay, "wraps:", wraps)
+	}
+
+	volumeKeys := make([]trafficVolumeKey, 0)
+	for volumeKey := range trafficVolume {
+		volumeKeys = append(volumeKeys, volumeKey)
+	}
+
+	slices.SortStableFunc(volumeKeys, func(a trafficVolumeKey, b trafficVolumeKey) int {
+
+		if a.weekday == b.weekday {
+			if a.timeOfDay == b.timeOfDay {
+				return 0
+			} else if a.timeOfDay < b.timeOfDay {
+				return -1
+			} else {
+				return 1
+			}
 		}
-	*/
+
+		adjustedWeekdayA := a.weekday - startDay
+		if int(adjustedWeekdayA) < 0 {
+			adjustedWeekdayA += 7
+		}
+		adjustedWeekdayB := b.weekday - startDay
+		if int(adjustedWeekdayB) < 0 {
+			adjustedWeekdayB += 7
+		}
+
+		if adjustedWeekdayA < adjustedWeekdayB {
+			return -1
+		} else {
+			return 1
+		}
+
+	})
+
+	if VERBOSE {
+		fmt.Println()
+		fmt.Println("volumeKeys")
+
+		for _, volumeKey := range volumeKeys {
+			fmt.Println(volumeKey.weekday, volumeKey.timeOfDay)
+
+		}
+	}
+
+	for i := 0; i < len(volumeKeys); i++ {
+		for j := i + 1; j < len(volumeKeys); j++ {
+			startSpike := volumeKeys[i]
+			endSpike := volumeKeys[j]
+			var spikeRequests int64 = 0
+			for k := i; k <= j; k++ {
+				spikeRequests += int64(trafficVolume[volumeKeys[k]])
+			}
+			spikeDuration := 0
+			if startSpike.weekday == endSpike.weekday {
+				spikeDuration = int(endSpike.timeOfDay) - int(startSpike.timeOfDay)
+			} else {
+				spikeDuration = int(endSpike.timeOfDay) - int(startSpike.timeOfDay)
+				days := int(endSpike.weekday) - int(startSpike.weekday)
+				if days < 0 {
+					days += 7
+				}
+				spikeDuration += days * 24 * int(time.Hour)
+			}
+			spikeDuration /= int(time.Second)
+			// fmt.Println("spikeDuration:", spikeDuration)
+			spikeAverage := float64(spikeRequests) / float64(spikeDuration)
+
+			currentSpike := spike{startSpike, endSpike, time.Duration(spikeDuration * int(time.Second)), spikeRequests, spikeAverage}
+			spikeCount := len(activitySpikes)
+
+			if spikeCount > 0 {
+				var insertAt int = -1
+
+				if spikeAverage > activitySpikes[spikeCount-1].avgRqs {
+					for _i, activitySpike := range activitySpikes {
+						if spikeAverage > activitySpike.avgRqs {
+							insertAt = _i
+							break
+						} else if spikeAverage == activitySpike.avgRqs {
+							if spikeRequests > activitySpike.requests {
+								insertAt = _i
+								break
+							}
+						}
+					}
+				}
+
+				if insertAt != -1 {
+					activitySpikes = append(activitySpikes[:insertAt+1], activitySpikes[insertAt:]...)
+					activitySpikes[insertAt] = currentSpike
+				} else if spikeCount < MAX_SPIKES {
+					activitySpikes = append(activitySpikes, currentSpike)
+				}
+
+				if len(activitySpikes) > MAX_SPIKES {
+					activitySpikes = activitySpikes[:MAX_SPIKES]
+				}
+
+			} else {
+				activitySpikes = append(activitySpikes, currentSpike)
+			}
+		}
+	}
 
 	// find the gaps in traffic
 	// here, we use the actual timestamps for a more precise measure
@@ -321,7 +445,7 @@ func analyze() {
 			*/
 			currentGap := span{last, timestamp, elapsed}
 			gapCount := len(activityGaps)
-			if gapCount > 1 {
+			if gapCount > 0 {
 
 				var insertAt int = -1
 
@@ -410,6 +534,19 @@ func report() {
 	}
 
 	fmt.Println()
+	fmt.Println("Top Activity Spikes**")
+	fmt.Println("=====================")
+	fmt.Println("Start                End                      Spans        #Rqs        Rq/S")
+	fmt.Println("-------------------  -------------------  ---------  ----------  ----------")
+	for _, spike := range activitySpikes {
+		fmt.Printf("%9s  %8s  %9s  %8s  %9s  %10d  %10f\n",
+			spike.start.weekday, toClock(spike.start.timeOfDay),
+			spike.end.weekday, toClock(spike.end.timeOfDay),
+			spike.spans, spike.requests, spike.avgRqs)
+	}
+	fmt.Println("** data timestamps rounded to 5 minute intervals")
+
+	fmt.Println()
 	fmt.Println("Top Activity Gaps")
 	fmt.Println("=================")
 	fmt.Println("Start                          End                            Duration")
@@ -418,4 +555,15 @@ func report() {
 		fmt.Printf("%s  %s  %s\n", gap.start, gap.end, gap.elapsed)
 	}
 
+}
+
+func toClock(v time.Duration) string {
+	_v := int(v.Seconds())
+	s := _v % 60
+	_v /= 60
+	m := _v % 60
+	_v /= 60
+	h := _v
+
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
