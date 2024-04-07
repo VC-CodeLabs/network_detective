@@ -371,6 +371,18 @@ func analyze() {
 			startSpike := volumeKeys[i]
 			endSpike := volumeKeys[j]
 			if i == j {
+				if j < len(volumeKeys)-1 {
+					nextSpike := volumeKeys[j+1]
+
+					if nextSpike.weekday == startSpike.weekday && int(nextSpike.timeOfDay-startSpike.timeOfDay) == int(5*time.Minute) {
+						continue
+					}
+
+					if int(nextSpike.weekday) == (int(startSpike.weekday)+1)%7 && toClock(nextSpike.timeOfDay) == "00:00:00" && toClock(startSpike.timeOfDay) == "23:55:00" {
+						continue
+					}
+				}
+
 				endSpike.timeOfDay = time.Duration(int(endSpike.timeOfDay.Seconds())*int(time.Second) + int(5*time.Minute) - int(1*time.Second))
 			}
 			var spikeRequests int64 = 0
