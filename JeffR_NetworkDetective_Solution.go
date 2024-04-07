@@ -278,6 +278,14 @@ type spike struct {
 
 var activitySpikes []spike = make([]spike, 0)
 
+type cyclicalGap struct {
+	start trafficVolumeKey
+	end   trafficVolumeKey
+	spans time.Duration
+}
+
+var activityGapsCyclical []cyclicalGap = make([]cyclicalGap, 0)
+
 type span struct {
 	start   time.Time
 	end     time.Time
@@ -421,6 +429,97 @@ func analyze() {
 		}
 	}
 
+	// find the cyclical gaps in traffic
+	// here, we use the data "normalized" to weekday and rounded to 5m intervals
+	const MAX_GAPS = 10
+
+	var prev trafficVolumeKey
+	for i, curr := range volumeKeys {
+		if i > 0 {
+			cycleStart := prev
+			cycleEnd := curr
+			// isGap := false
+			days := 0
+
+			if prev.weekday != curr.weekday {
+				days = int(curr.weekday) - int(prev.weekday)
+				if days < 0 {
+					days += 7
+				}
+			}
+
+			dummyPrev, _ := time.Parse("2006-01-02T15:04:05", fmt.Sprintf("2006-01-02T%s", toClock(prev.timeOfDay)))
+			dummyCurr, _ := time.Parse("2006-01-02T15:04:05", fmt.Sprintf("2006-01-02T%s", toClock(curr.timeOfDay)))
+			dummyCurr = dummyCurr.Add(time.Duration(days * 24 * int(time.Hour)))
+
+			if dummyCurr.Sub(dummyPrev) > time.Duration(5*int(time.Minute)) {
+				// account for crossing midnight boundary in either direction
+				prevDayWas := dummyPrev.Day()
+				dummyPrev = dummyPrev.Add(time.Duration(5 * int(time.Minute)))
+				if dummyPrev.Day() > prevDayWas {
+					if cycleStart.weekday == time.Saturday {
+						cycleStart.weekday = time.Sunday
+					} else {
+						cycleStart.weekday++
+					}
+				}
+				currDayWas := dummyCurr.Day()
+				dummyCurr = dummyCurr.Add(time.Duration(-1 * int(time.Second)))
+				if dummyCurr.Day() < currDayWas {
+					if cycleEnd.weekday == time.Sunday {
+						cycleEnd.weekday = time.Saturday
+					} else {
+						cycleEnd.weekday--
+					}
+				}
+
+				spans := dummyCurr.Sub(dummyPrev)
+
+				hours, minutes, seconds := dummyPrev.Clock()
+				cycleStart.timeOfDay = time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+
+				hours, minutes, seconds = dummyCurr.Clock()
+				cycleEnd.timeOfDay = time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+
+				/*
+					cycleStart.timeOfDay = time.Duration(int(cycleStart.timeOfDay) + 5*int(time.Minute))
+					cycleEnd.timeOfDay = time.Duration(int(cycleEnd.timeOfDay) - 1*int(time.Second))
+				*/
+				newGap := cyclicalGap{cycleStart, cycleEnd, spans}
+				cycleCount := len(activityGapsCyclical)
+
+				if cycleCount > 0 {
+					insertAt := -1
+					if newGap.spans > activityGapsCyclical[cycleCount-1].spans {
+						for c, cycle := range activityGapsCyclical {
+							if newGap.spans > cycle.spans {
+								insertAt = c
+								break
+							}
+						}
+
+					}
+
+					if insertAt != -1 {
+						activityGapsCyclical = append(activityGapsCyclical[:insertAt+1], activityGapsCyclical[insertAt:]...)
+						activityGapsCyclical[insertAt] = newGap
+
+					} else if cycleCount < MAX_GAPS {
+						activityGapsCyclical = append(activityGapsCyclical, newGap)
+					}
+
+					if len(activityGapsCyclical) > MAX_GAPS {
+						activityGapsCyclical = activityGapsCyclical[:MAX_GAPS]
+					}
+
+				} else {
+					activityGapsCyclical = append(activityGapsCyclical, newGap)
+				}
+			}
+		}
+		prev = curr
+	}
+
 	// find the absolute gaps in traffic
 	// here, we use the actual timestamps for a more precise measure
 
@@ -433,7 +532,6 @@ func analyze() {
 		return a.Compare(b)
 	})
 
-	const MAX_GAPS = 10
 	var last time.Time
 	for i, timestamp := range timestamps {
 		if i > 0 {
@@ -539,15 +637,28 @@ func report() {
 	fmt.Println()
 	fmt.Println("Top Activity Spikes**")
 	fmt.Println("=====================")
-	fmt.Println("Start                End                      Spans        #Rqs        Rq/S")
-	fmt.Println("-------------------  -------------------  ---------  ----------  ----------")
+	fmt.Println("Start                End                       Spans        #Rqs        Rq/S")
+	fmt.Println("-------------------  -------------------  ----------  ----------  ----------")
 	for _, spike := range activitySpikes {
-		fmt.Printf("%9s  %8s  %9s  %8s  %9s  %10d  %10f\n",
+		fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
 			spike.start.weekday, toClock(spike.start.timeOfDay),
 			spike.end.weekday, toClock(spike.end.timeOfDay),
 			spike.spans, spike.requests, spike.avgRqs)
 	}
 	fmt.Println("** data timestamps rounded to 5 minute intervals")
+
+	fmt.Println()
+	fmt.Println("Top Cyclical Activity Gaps**")
+	fmt.Println("============================")
+	fmt.Println("Start                                End       Spans")
+	fmt.Println("-------------------  -------------------  ----------")
+	for _, cyclical := range activityGapsCyclical {
+		fmt.Printf("%9s  %8s  %9s  %8s  %10s\n", cyclical.start.weekday, toClock(cyclical.start.timeOfDay),
+			cyclical.end.weekday, toClock(cyclical.end.timeOfDay),
+			cyclical.spans)
+	}
+	fmt.Println("** data timestamps rounded to 5 minute intervals")
+	fmt.Println("** longer-duration logs (minimum > 1 week) produce more predictive long-term cyclical gaps")
 
 	fmt.Println()
 	fmt.Println("Top Absolute Activity Gaps")
