@@ -268,6 +268,8 @@ func storeData(timestamp time.Time, ipAddr string, method string, path string, s
 var totalRequests = 0
 var totalFailedLogins = 0
 
+var trafficDays map[trafficVolumeKey]int = make(map[trafficVolumeKey]int)
+
 type spike struct {
 	start     trafficVolumeKey
 	end       trafficVolumeKey
@@ -367,6 +369,43 @@ func analyze() {
 		}
 	}
 
+	timestamps := make([]time.Time, 0)
+	for _, item := range networkData {
+		timestamps = append(timestamps, item.timestamp)
+	}
+
+	slices.SortStableFunc(timestamps, func(a time.Time, b time.Time) int {
+		return a.Compare(b)
+	})
+
+	var prevTimestamp time.Time
+	for i, timestamp := range timestamps {
+		inc := false
+
+		hours, minutes, seconds := timestamp.Round(time.Duration(5 * int(time.Minute))).Clock()
+		timeOfDay := time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+
+		if i > 0 {
+			if !(prevTimestamp.Year() == timestamp.Year() && prevTimestamp.YearDay() == timestamp.YearDay()) {
+				// !sameDay(prevTimestamp,timestamp) {
+				inc = true
+			} else {
+				hours, minutes, seconds := prevTimestamp.Round(time.Duration(5 * int(time.Minute))).Clock()
+				prevTimeOfDay := time.Duration((hours*int(time.Hour) + minutes*int(time.Minute) + seconds*int(time.Second)))
+				if timeOfDay != prevTimeOfDay {
+					inc = true
+				}
+			}
+		} else {
+			inc = true
+		}
+
+		if inc {
+			trafficDays[trafficVolumeKey{timestamp.Weekday(), timeOfDay}]++
+		}
+		prevTimestamp = timestamp
+	}
+
 	for i := 0; i < len(volumeKeys); i++ {
 		for j := i; j < len(volumeKeys); j++ {
 			startSpike := volumeKeys[i]
@@ -387,8 +426,10 @@ func analyze() {
 				endSpike.timeOfDay = time.Duration(int(endSpike.timeOfDay.Seconds())*int(time.Second) + int(5*time.Minute) - int(1*time.Second))
 			}
 			var spikeRequests int64 = 0
+			var trafficDayCount int64 = 0
 			for k := i; k <= j; k++ {
 				spikeRequests += int64(trafficVolume[volumeKeys[k]])
+				trafficDayCount += int64(trafficDays[volumeKeys[k]])
 			}
 			spikeDuration := 0
 			if startSpike.weekday == endSpike.weekday {
@@ -408,7 +449,7 @@ func analyze() {
 				spikeDuration += 5 * 60
 			}
 			// fmt.Println("spikeDuration:", spikeDuration)
-			spikeAverage := float64(spikeRequests) / float64(spikeDuration)
+			spikeAverage := float64(spikeRequests) / float64(spikeDuration) / float64(trafficDayCount)
 
 			if VERBOSE {
 				fmt.Printf("spike- %s %s %d %f\n", toClock(startSpike.timeOfDay), toClock(endSpike.timeOfDay), spikeRequests, spikeAverage)
@@ -421,7 +462,7 @@ func analyze() {
 			if spikeCount > 0 {
 				var insertAt int = -1
 
-				if spikeAverage > activitySpikes[spikeCount-1].avgRqs {
+				if spikeAverage >= activitySpikes[spikeCount-1].avgRqs {
 					for _i, activitySpike := range activitySpikes {
 						if spikeAverage > activitySpike.avgRqs {
 							insertAt = _i
@@ -434,6 +475,12 @@ func analyze() {
 						}
 					}
 				}
+
+				/*
+					if spikeRequests == 2 && trafficDayCount == 2 {
+						fmt.Printf("spike insert- %s %s @ %d\n", startSpike.weekday, toClock(startSpike.timeOfDay), insertAt)
+					}
+				*/
 
 				if insertAt != -1 {
 					activitySpikes = append(activitySpikes[:insertAt+1], activitySpikes[insertAt:]...)
@@ -557,15 +604,6 @@ func analyze() {
 	// find the absolute gaps in traffic
 	// here, we use the actual timestamps for a more precise measure
 
-	timestamps := make([]time.Time, 0)
-	for _, item := range networkData {
-		timestamps = append(timestamps, item.timestamp)
-	}
-
-	slices.SortStableFunc(timestamps, func(a time.Time, b time.Time) int {
-		return a.Compare(b)
-	})
-
 	var last time.Time
 	for i, timestamp := range timestamps {
 		if i > 0 {
@@ -671,20 +709,20 @@ func report() {
 	fmt.Println()
 	fmt.Println("Top Activity Spikes**")
 	fmt.Println("=====================")
-	fmt.Println("Start (+/-2.5m)      End  (+/-2.5m)           ~Spans        #Rqs        Rq/S")
-	fmt.Println("-------------------  -------------------  ----------  ----------  ----------")
+	fmt.Println("Start (+/-2.5m)      End  (+/-2.5m)           ~Spans        #Rqs        Days  Rq/S/Day")
+	fmt.Println("-------------------  -------------------  ----------  ----------  ----------  ----------")
 	for _, spike := range activitySpikes {
 		if spike.singleton {
-			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
+			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10d  %10f\n",
 				spike.start.weekday, toClock(spike.start.timeOfDay),
 				"", "*",
-				"(5m)", spike.requests, spike.avgRqs)
+				"(5m)", spike.requests, trafficDays[spike.start], spike.avgRqs)
 
 		} else {
-			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10f\n",
+			fmt.Printf("%9s  %8s  %9s  %8s  %10s  %10d  %10d  %10f\n",
 				spike.start.weekday, toClock(spike.start.timeOfDay),
 				spike.end.weekday, toClock(spike.end.timeOfDay),
-				spike.spans, spike.requests, spike.avgRqs)
+				spike.spans, spike.requests, trafficDays[spike.start], spike.avgRqs)
 		}
 	}
 	fmt.Println("** data timestamps rounded to 5 minute intervals")
