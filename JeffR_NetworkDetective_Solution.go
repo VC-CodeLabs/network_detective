@@ -429,7 +429,9 @@ func analyze() {
 			var trafficDayCount int64 = 0
 			for k := i; k <= j; k++ {
 				spikeRequests += int64(trafficVolume[volumeKeys[k]])
-				trafficDayCount += int64(trafficDays[volumeKeys[k]])
+				if k == i || volumeKeys[k] != volumeKeys[k-1] {
+					trafficDayCount = max(trafficDayCount, int64(trafficDays[volumeKeys[k]]))
+				}
 			}
 			spikeDuration := 0
 			if startSpike.weekday == endSpike.weekday {
@@ -452,7 +454,7 @@ func analyze() {
 			spikeAverage := float64(spikeRequests) / float64(spikeDuration) / float64(trafficDayCount)
 
 			if VERBOSE {
-				fmt.Printf("spike- %s %s %d %f\n", toClock(startSpike.timeOfDay), toClock(endSpike.timeOfDay), spikeRequests, spikeAverage)
+				fmt.Printf("spike- %s %s %d %d %d %f\n", toClock(startSpike.timeOfDay), toClock(endSpike.timeOfDay), spikeDuration, spikeRequests, trafficDayCount, spikeAverage)
 			}
 
 			currentSpike := spike{startSpike, endSpike,
