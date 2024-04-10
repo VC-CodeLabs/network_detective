@@ -39,6 +39,7 @@ func main() {
 	}
 
 	if interactiveMode {
+		fmt.Println("ERR parameter required")
 		advertiseHelpFlag()
 		// runConsole();
 	} else {
@@ -68,7 +69,7 @@ func main() {
 }
 
 func advertiseHelpFlag() {
-	fmt.Println("use -? for help with command line")
+	fmt.Println("use -h for help with command line")
 }
 
 func emitHelp() {
@@ -221,6 +222,22 @@ type trafficVolumeKey struct {
 
 var trafficVolume map[trafficVolumeKey]int = make(map[trafficVolumeKey]int)
 
+type results struct {
+	succeeded int64
+	failed    int64
+	minTOD    time.Duration
+	maxTOD    time.Duration
+	weight    int64
+}
+
+type trafficDetails struct {
+	byPath map[string]map[string]results
+	// byMethod map[string]results
+	byWeekday map[time.Weekday]results
+}
+
+var trafficByIP map[string]trafficDetails = make(map[string]trafficDetails)
+
 func storeData(timestamp time.Time, ipAddr string, method string, path string, statusCode int) {
 	if len(networkData) == 0 {
 		minTime = timestamp
@@ -262,6 +279,61 @@ func storeData(timestamp time.Time, ipAddr string, method string, path string, s
 	if path == "/login" && isHttpError(statusCode) {
 		failedLoginsByIP[ipAddr]++
 	}
+
+	///////////////////////////////
+
+	_, ok = trafficByIP[ipAddr]
+
+	if !ok {
+		trafficByIP[ipAddr] = trafficDetails{make(map[string]map[string]results), make(map[time.Weekday]results)}
+	}
+
+	_, ok = trafficByIP[ipAddr].byPath[path]
+
+	if !ok {
+		trafficByIP[ipAddr].byPath[path] = make(map[string]results)
+	}
+
+	_, ok = trafficByIP[ipAddr].byPath[path][method]
+
+	if !ok {
+		trafficByIP[ipAddr].byPath[path][method] = results{0, 0, timeOfDay, timeOfDay, 0}
+	}
+
+	resultsVal := trafficByIP[ipAddr].byPath[path][method]
+	if isHttpSuccess(statusCode) {
+		resultsVal.succeeded++
+	} else {
+		resultsVal.failed++
+
+	}
+	if timeOfDay < resultsVal.minTOD {
+		resultsVal.minTOD = timeOfDay
+	}
+	if timeOfDay > resultsVal.maxTOD {
+		resultsVal.maxTOD = timeOfDay
+	}
+	trafficByIP[ipAddr].byPath[path][method] = resultsVal
+
+	_, ok = trafficByIP[ipAddr].byWeekday[timestamp.Weekday()]
+
+	if !ok {
+		trafficByIP[ipAddr].byWeekday[timestamp.Weekday()] = results{0, 0, timeOfDay, timeOfDay, 0}
+	}
+
+	resultsVal = trafficByIP[ipAddr].byWeekday[timestamp.Weekday()]
+	if isHttpSuccess(statusCode) {
+		resultsVal.succeeded++
+	} else {
+		resultsVal.failed++
+	}
+	if timeOfDay < resultsVal.minTOD {
+		resultsVal.minTOD = timeOfDay
+	}
+	if timeOfDay > resultsVal.maxTOD {
+		resultsVal.maxTOD = timeOfDay
+	}
+	trafficByIP[ipAddr].byWeekday[timestamp.Weekday()] = resultsVal
 
 }
 
@@ -651,6 +723,59 @@ func analyze() {
 		last = timestamp
 	}
 
+	weightTrafficByIP()
+
+}
+
+func weightTrafficByIP() {
+
+	ipAddrs := make([]string, 0)
+	for ipAddr := range trafficByIP {
+		ipAddrs = append(ipAddrs, ipAddr)
+
+	}
+
+	for _, ipAddr := range ipAddrs {
+		ipDetails := trafficByIP[ipAddr]
+
+		for _, otherIpAddr := range ipAddrs {
+			if otherIpAddr != ipAddr {
+				otherIpDetails := trafficByIP[otherIpAddr]
+
+				for path := range ipDetails.byPath {
+
+					for method := range ipDetails.byPath[path] {
+						results := ipDetails.byPath[path][method]
+						otherResults, ok := otherIpDetails.byPath[path][method]
+
+						if ok {
+							updated := false
+							// fmt.Printf("CHECK WEIGHT: %s %s %s %s\n", ipAddr, path, method, otherIpAddr)
+							if results.succeeded > 0 && otherResults.succeeded > 0 {
+								results.weight += otherResults.succeeded
+								updated = true
+							}
+
+							if results.failed > 0 {
+								results.weight += -results.failed
+								updated = true
+							}
+
+							if updated {
+								ipDetails.byPath[path][method] = results
+								// fmt.Printf("WEIGHT: %s %s %s %d\n", ipAddr, path, method, results.weight)
+							}
+
+						}
+
+					}
+				}
+
+			}
+		}
+
+	}
+
 }
 
 func Count[T any](ts []T, pred func(T) bool) int {
@@ -665,6 +790,10 @@ func Count[T any](ts []T, pred func(T) bool) int {
 
 func isHttpError(statusCode int) bool {
 	return statusCode/100 != 2
+}
+
+func isHttpSuccess(statusCode int) bool {
+	return !isHttpError(statusCode)
 }
 
 func report() {
@@ -750,6 +879,206 @@ func report() {
 	for _, gap := range activityGapsAbsolute {
 		fmt.Printf("%s  %s  %s\n", gap.start, gap.end, gap.elapsed)
 	}
+
+	reportTrafficByIP()
+
+}
+
+func reportTrafficByIP() {
+	fmt.Println()
+	fmt.Println("Traffic By IP")
+	fmt.Println("=============")
+	fmt.Println("Sorted by overall Failure \"Density\" (Worst-to-Best)")
+	fmt.Println("#Succeeded/#Requests by Day of Week")
+	fmt.Printf("%15s", "")
+	dayNames := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+	for _, dayName := range dayNames {
+		fmt.Printf("  %15s", dayName)
+	}
+	fmt.Println()
+
+	ipAddrs := make([]string, 0)
+	for ipAddr := range trafficByIP {
+		ipAddrs = append(ipAddrs, ipAddr)
+	}
+
+	slices.SortStableFunc(ipAddrs, func(a string, b string) int {
+		var aFailed int64 = 0
+		var aSucceeded int64 = 0
+		for _, weekdayResults := range trafficByIP[a].byWeekday {
+			aFailed += weekdayResults.failed
+			aSucceeded += weekdayResults.succeeded
+
+		}
+		var bFailed int64 = 0
+		var bSucceeded int64 = 0
+		for _, weekdayResults := range trafficByIP[b].byWeekday {
+			bFailed += weekdayResults.failed
+			bSucceeded += weekdayResults.succeeded
+
+		}
+
+		// list more failures first
+		if aFailed < bFailed {
+			return 1
+		} else if aFailed > bFailed {
+			return -1
+		}
+
+		// list fewer successes first
+		if aSucceeded < bSucceeded {
+			return -1
+		} else if aSucceeded > bSucceeded {
+			return 1
+		}
+
+		return strings.Compare(a, b)
+	})
+
+	weekdays := []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday, time.Saturday, time.Sunday}
+	for _, ipAddr := range ipAddrs {
+		fmt.Printf("%-15s", ipAddr)
+		for _, weekday := range weekdays {
+			byWeekday := trafficByIP[ipAddr].byWeekday[weekday]
+			stats := fmt.Sprintf("  %d/%d", byWeekday.succeeded, byWeekday.succeeded+byWeekday.failed)
+			fmt.Printf("  %15s", stats)
+		}
+		fmt.Println()
+	}
+
+	/////////////////////////
+
+	slices.SortStableFunc(ipAddrs, func(a string, b string) int {
+		var aUpWeight int64 = 0
+		var aDownWeight int64 = 0
+		var aFailed int64 = 0
+		var aSucceeded int64 = 0
+		for _, pathResults := range trafficByIP[a].byPath {
+			for _, methodResults := range pathResults {
+				aFailed += methodResults.failed
+				aSucceeded += methodResults.succeeded
+				if methodResults.weight < 0 {
+					aDownWeight += methodResults.weight
+				} else {
+					aUpWeight += methodResults.weight
+				}
+
+			}
+
+		}
+
+		var bUpWeight int64 = 0
+		var bDownWeight int64 = 0
+		var bFailed int64 = 0
+		var bSucceeded int64 = 0
+		for _, pathResults := range trafficByIP[b].byPath {
+			for _, methodResults := range pathResults {
+				bFailed += methodResults.failed
+				bSucceeded += methodResults.succeeded
+				if methodResults.weight < 0 {
+					bDownWeight += methodResults.weight
+				} else {
+					bUpWeight += methodResults.weight
+				}
+
+			}
+
+		}
+
+		// list heavier items first
+		if aDownWeight < bDownWeight {
+			return -1
+		} else if aDownWeight > bDownWeight {
+			return 1
+		}
+
+		if aUpWeight < bUpWeight {
+			return 1
+		} else if aUpWeight > bUpWeight {
+			return -1
+		}
+
+		// list more failures first
+		if aFailed < bFailed {
+			return 1
+		} else if aFailed > bFailed {
+			return -1
+		}
+
+		// list fewer successes first
+		if aSucceeded < bSucceeded {
+			return -1
+		} else if aSucceeded > bSucceeded {
+			return 1
+		}
+
+		return strings.Compare(a, b)
+	})
+
+	paths := make(map[string]bool)
+	for ipAddr := range trafficByIP {
+		for path := range trafficByIP[ipAddr].byPath {
+			paths[path] = true
+		}
+
+	}
+
+	pathNames := make([]string, 0)
+	for path := range paths {
+		pathNames = append(pathNames, path)
+	}
+
+	sort.Strings(pathNames)
+
+	fmt.Println()
+	fmt.Println("#Succeeded/#Requests By Path / Method(s)** Weight")
+	fmt.Printf("%15s", "")
+	for _, path := range pathNames {
+		fmt.Printf("  %15s", path)
+	}
+	fmt.Println()
+
+	for _, ipAddr := range ipAddrs {
+		trafficDetail := trafficByIP[ipAddr]
+		fmt.Printf("%-15s", ipAddr)
+		rqSummary := ""
+		mwSummary := ""
+		for _, path := range pathNames {
+			// fmt.Printf(" %10s", path)
+			ipPaths, ok := trafficDetail.byPath[path]
+			if ok {
+				methods := ""
+				var totSuccesses int64 = 0
+				var totFailures int64 = 0
+				var weight int64 = 0
+				for method, results := range ipPaths {
+					abbrev := "?"
+					if strings.ToUpper(method) == "PUT" || strings.ToUpper(method) == "PATCH" {
+						abbrev = strings.ToUpper(method[1:2])
+					} else {
+						abbrev = strings.ToUpper(method[0:1])
+					}
+					methods += abbrev
+
+					weight += results.weight
+					totSuccesses += results.succeeded
+					totFailures += results.failed
+				}
+				mwSummary += fmt.Sprintf("  %9s %5d", methods, weight)
+				stats := fmt.Sprintf("  %d/%d", totSuccesses, totSuccesses+totFailures)
+				rqSummary += fmt.Sprintf("  %15s", stats)
+			} else {
+				mwSummary += fmt.Sprintf("  %15s", "")
+				rqSummary += fmt.Sprintf("  %15s", "x")
+			}
+
+		}
+
+		fmt.Println(rqSummary)
+		fmt.Printf("%15s%s\n", "", mwSummary)
+
+	}
+	fmt.Println("**Methods: G=GET, POST=P, DELETE=D, U=PUT, A=PATCH, H=HEAD, C=CONNECT, O=OPTIONS, T=TRACE")
 
 }
 
